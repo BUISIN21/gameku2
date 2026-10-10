@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  FLUTTER_VERSION: 3.47.7
+  LIVEKIT_VERSION: 1.13.8
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -23,9 +27,15 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: connectcall/backend/package-lock.json
+      # The Firestore emulator needs Java 21+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - name: Tests (API + security rules, against Firebase emulators)
+        run: npm test
       - run: npm run build
 
   app:
@@ -42,37 +52,42 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: 3.47.7
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
 
-      # Optional repository variables (Settings → Secrets and variables →
-      # Actions → Variables). They are public build settings, not secrets.
+      # Build settings come from the repository variable CONNECTCALL_APP_CONFIG
+      # (Settings → Secrets and variables → Actions → Variables): the JSON from
+      # config/example.json with your values. These are public client settings,
+      # not secrets. Without it the builds show a "missing configuration" screen.
+      - name: Write build configuration
+        env:
+          APP_CONFIG: ${{ vars.CONNECTCALL_APP_CONFIG }}
+        run: |
+          if [ -n "$APP_CONFIG" ]; then
+            printf '%s' "$APP_CONFIG" > config/ci.json
+          else
+            echo '{}' > config/ci.json
+            echo "::warning::CONNECTCALL_APP_CONFIG is not set; builds will show a setup message instead of the app."
+          fi
+
       - name: Build web
-        run: >
-          flutter build web --release --no-web-resources-cdn
-          --dart-define=API_BASE_URL=${{ vars.CONNECTCALL_API_BASE_URL }}
-          --dart-define=APP_NAME=${{ vars.CONNECTCALL_APP_NAME || 'ConnectCall' }}
+        run: flutter build web --release --no-web-resources-cdn --dart-define-from-file=config/ci.json
 
       - name: Build Android APKs
         run: |
-          flutter build apk --release \
-            --dart-define=API_BASE_URL=${{ vars.CONNECTCALL_API_BASE_URL }} \
-            --dart-define=WEB_APP_URL=${{ vars.CONNECTCALL_WEB_APP_URL }} \
-            --dart-define=APP_NAME=${{ vars.CONNECTCALL_APP_NAME || 'ConnectCall' }}
+          flutter build apk --release --dart-define-from-file=config/ci.json
           # Debug build allows http:// for testing against a laptop on the LAN.
-          flutter build apk --debug \
-            --dart-define=API_BASE_URL=${{ vars.CONNECTCALL_API_BASE_URL }}
+          flutter build apk --debug --dart-define-from-file=config/ci.json
           mkdir -p ../out
           cp build/app/outputs/flutter-apk/app-release.apk ../out/ConnectCall-release.apk
           cp build/app/outputs/flutter-apk/app-debug.apk ../out/ConnectCall-debug.apk
 
       - name: Check builds contain no server secrets
         run: |
-          set -e
-          for pattern in LIVEKIT_API_SECRET "BEGIN PRIVATE KEY" private_key_id; do
+          for pattern in LIVEKIT_API_SECRET "BEGIN PRIVATE KEY" private_key_id client_secret; do
             if grep -R -a -l "$pattern" build/web ../out; then
               echo "::error::Found '$pattern' in a client build"; exit 1
             fi
@@ -87,3 +102,71 @@ jobs:
         with:
           name: ConnectCall-web
           path: connectcall/app/build/web
+
+  e2e:
+    # Real browsers + real backend + real LiveKit + Firebase emulators.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install LiveKit server
+        run: |
+          curl -sSfL -o /tmp/lk.tgz "https://github.com/livekit/livekit/releases/download/v${LIVEKIT_VERSION}/livekit_${LIVEKIT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/lk.tgz -C /tmp livekit-server
+          sudo mv /tmp/livekit-server /usr/local/bin/
+
+      - name: Build web app (emulator configuration)
+        working-directory: connectcall/app
+        run: |
+          flutter pub get
+          flutter build web --release --no-web-resources-cdn --dart-define-from-file=config/emulator.json
+
+      - name: Install test dependencies
+        run: |
+          npm ci --prefix connectcall/backend
+          npm ci --prefix connectcall/e2e
+          npx --prefix connectcall/e2e playwright install --with-deps chromium
+
+      - name: Start services
+        run: |
+          mkdir -p /tmp/logs
+          (cd connectcall/backend && nohup npm run emulators > /tmp/logs/emulators.log 2>&1 &)
+          nohup livekit-server --dev --bind 127.0.0.1 --node-ip 127.0.0.1 > /tmp/logs/livekit.log 2>&1 &
+          (cd connectcall/app/build/web && nohup python3 -m http.server 5000 --bind 127.0.0.1 > /tmp/logs/web.log 2>&1 &)
+          npm run build --prefix connectcall/backend
+          (cd connectcall/backend && PORT=8080 LIVEKIT_URL=ws://localhost:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+            FIREBASE_PROJECT_ID=demo-connectcall FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 \
+            CORS_ORIGINS=http://localhost:5000 nohup node dist/server.js > /tmp/logs/api.log 2>&1 &)
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:8085 >/dev/null && curl -sf http://127.0.0.1:9099 >/dev/null \
+              && curl -sf http://localhost:8080/healthz >/dev/null && curl -sf http://localhost:7880 >/dev/null; then
+              echo "all services up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::services did not start"; tail -n 50 /tmp/logs/*.log; exit 1
+
+      - name: Run end-to-end test
+        working-directory: connectcall/e2e
+        run: npm test -- /tmp/e2e-screenshots
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConnectCall-e2e
+          path: |
+            /tmp/e2e-screenshots
+            /tmp/logs

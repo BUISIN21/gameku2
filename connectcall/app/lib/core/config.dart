@@ -28,18 +28,19 @@ class AppConfig {
 
 /// Public URL of the deployed web app (e.g. `https://connectcall.web.app`),
 /// used to build shareable invitation links from the Android app. When empty,
-/// the web app uses its own address and Android shares the bare room code.
+/// the web app uses its own address and Android shares the bare invitation id
+/// (which can be pasted into the app just like a link).
 const webAppUrl = String.fromEnvironment('WEB_APP_URL');
 
-/// Builds the link a user can send to invite someone to [roomCode].
-String? invitationLink(String roomCode) {
+/// Builds the link a user can send to invite someone with [inviteId].
+String invitationLink(String inviteId) {
   String base;
   if (webAppUrl.isNotEmpty) {
     base = webAppUrl;
   } else if (kIsWeb) {
     base = Uri.base.replace(query: '', fragment: '').toString().replaceAll(RegExp(r'\?$'), '');
   } else {
-    return null;
+    return inviteId;
   }
-  return Uri.parse(base).replace(queryParameters: {'room': roomCode}).toString();
+  return Uri.parse(base).replace(queryParameters: {'invite': inviteId}).toString();
 }

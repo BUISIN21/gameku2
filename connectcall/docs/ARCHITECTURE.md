@@ -1,4 +1,4 @@
-# ConnectCall — Phase 1: Architecture
+# ConnectCall — Architecture
 
 ## 1. System overview
 
@@ -56,12 +56,13 @@ the web build uses `--no-web-resources-cdn` to self-host it.
 ```
 connectcall/
 ├── app/                         Flutter app (Android + web)
+│   ├── config/                  example.json, emulator.json (+ your git-ignored dev/prod.json)
 │   ├── lib/
-│   │   ├── core/                config.dart (APP_NAME, API URL), theme.dart
-│   │   ├── models/              join_info.dart, room_code.dart
-│   │   ├── services/            api_client.dart, media_permissions.dart, settings_store.dart
-│   │   ├── screens/             home_screen.dart, meeting_screen.dart
-│   │   ├── widgets/             participant_tile.dart, control_bar.dart, device_settings_sheet.dart
+│   │   ├── core/                config, Firebase setup, app scope, theme
+│   │   ├── models/              models.dart, join_info.dart, invite_link.dart
+│   │   ├── services/            api_client, auth_service, media_permissions, settings_store
+│   │   ├── screens/             auth_gate, login, home, room, invite, profile, meeting
+│   │   ├── widgets/             participant_tile, control_bar, device_settings_sheet, common
 │   │   └── main.dart
 │   ├── android/                 manifest with camera/mic permissions, ProGuard rules
 │   ├── web/                     index.html, manifest.json
@@ -69,42 +70,71 @@ connectcall/
 ├── backend/
 │   ├── src/
 │   │   ├── config/env.ts        zod-validated environment
-│   │   ├── middleware/          errors, rate limiting, access key
-│   │   ├── routes/rooms.ts      POST /api/rooms, POST /api/rooms/:code/join
-│   │   ├── services/            livekit.ts (tokens), roomStore.ts
+│   │   ├── middleware/          auth (Firebase ID tokens), errors, rate limits
+│   │   ├── routes/              me.ts, rooms.ts, invites.ts, validation.ts
+│   │   ├── services/            rooms.ts (all permission logic), livekit.ts, firebase.ts
 │   │   ├── app.ts / server.ts
-│   ├── test/rooms.test.ts
+│   ├── test/                    API tests + security-rules tests (run on emulators)
 │   ├── .env.example             placeholders only
 │   └── Dockerfile
-├── e2e/two-browser-call.cjs     real two-browser call test
-├── firebase/                    (Phase 3) firestore.rules, firestore.indexes.json
+├── firebase/                    firestore.rules, firestore.indexes.json
+├── firebase.json / .firebaserc  Firebase CLI config (emulators, rules, hosting)
+├── e2e/                         real-browser end-to-end test
 └── docs/                        ARCHITECTURE, SETUP, TESTING, DEPLOYMENT
 ```
 
+### Data model (Firestore)
+
+| Path | Contents | Who can read (rules) | Who writes |
+|---|---|---|---|
+| `users/{uid}` | `displayName`, `photoUrl` | any signed-in user | backend |
+| `users/{uid}/memberships/{roomId}` | `roomName`, `role` | that user | backend |
+| `rooms/{roomId}` | `name`, `ownerUid`, `ownerName`, `requireApproval` | members | backend |
+| `rooms/{roomId}/members/{uid}` | `displayName`, `role` | members; a user can read their own doc | backend |
+| `rooms/{roomId}/waiting/{uid}` | join requests | owner; the requester | backend |
+| `rooms/{roomId}/blocked/{uid}` | removed users | nobody | backend |
+| `invites/{inviteId}` | `roomId`, `expiresAt`, `maxUses`, `uses`, `revoked` | nobody | backend |
+
+All writes that grant access go through the backend. Clients only *read*, and the rules allow exactly
+the reads in the table, which drive the live room list, member list and waiting room.
+
+### API (all routes require `Authorization: Bearer <Firebase ID token>`)
+
+| Method & path | Who |
+|---|---|
+| `GET /api/me`, `PUT /api/me/profile` | self |
+| `POST /api/rooms` | any user (max 50 owned rooms) |
+| `GET /api/rooms/:id`, `GET /api/rooms/:id/members`, `POST /api/rooms/:id/token` | members |
+| `DELETE /api/rooms/:id/members/me` | members (leave) |
+| `DELETE /api/rooms/:id/members/:uid`, `POST /api/rooms/:id/end` | owner |
+| `GET/POST /api/rooms/:id/invites`, `POST /api/rooms/:id/invites/:inviteId/revoke` | owner |
+| `GET /api/rooms/:id/waiting`, `POST /api/rooms/:id/waiting/:uid/approve\|deny` | owner |
+| `GET /api/invites/:id`, `POST /api/invites/:id/accept` | anyone holding the link |
+
 ## 3. Flows
 
-### Authentication flow (Phase 3)
+### Authentication flow (implemented in Phase 3)
 
-1. The app signs in with Firebase Authentication (email/password, optionally Google).
+1. The app signs in with Firebase Authentication (email/password; Google sign-in can be added later).
 2. The Firebase SDK keeps a refresh token and gives the app an **ID token** (a JWT, valid 1 hour, refreshed automatically).
 3. Every API call sends `Authorization: Bearer <ID token>`.
 4. The API verifies it with the Firebase Admin SDK (`verifyIdToken(token, checkRevoked=true)`), which checks the signature, expiry, audience and revocation. The verified `uid` is the only identity the server trusts.
 5. A 401 makes the app refresh the ID token once, and send the user back to the login screen if that fails (expired or revoked session).
-6. Logout calls `FirebaseAuth.signOut()`, disconnects any call and clears cached data.
+6. Logout calls `FirebaseAuth.signOut()`. The auth gate closes every open screen, including a call, and shows the login screen.
 
-### Invitation flow (Phase 3)
+### Invitation flow (implemented in Phase 3)
 
-1. The owner creates a room → `rooms/{roomId}` in Firestore, `ownerUid`, `private: true`.
+1. The owner creates a room → `rooms/{roomId}` in Firestore with `ownerUid`. Every room is private.
 2. The owner creates an invitation → the API stores `invites/{inviteId}` with a random 128-bit id, `roomId`, `expiresAt` (e.g. 24 h), `maxUses`, `revoked: false`. Link: `https://<web-app>/?invite=<inviteId>`.
 3. The recipient opens the link and signs in. The app calls `POST /api/invites/{id}/accept`.
-4. The server checks that the invite exists, is not expired or revoked, and still has uses left. It then adds the user to `rooms/{roomId}/members/{uid}` (or to `waiting/` if approval is on).
-5. Revoking sets `revoked: true`. Existing members keep access until removed, and the owner can remove them, which also calls LiveKit `removeParticipant`.
+4. In one Firestore **transaction** the server checks that the invite exists and is not expired, revoked, used up or blocked for this user. It then adds the user to `rooms/{roomId}/members/{uid}` (or `waiting/` when approval is on) and counts the use. Concurrent requests cannot exceed `maxUses`.
+5. Revoking sets `revoked: true`. Existing members keep access until removed. Removing someone deletes their membership, adds them to `blocked/` (so old links stop working for them) and calls LiveKit `removeParticipant`.
 
-### LiveKit token flow (all phases)
+### LiveKit token flow
 
-1. The app asks `POST /api/rooms/{room}/join`.
-2. The server checks permission. In Phase 2 that means the room exists and has not expired; in Phase 3+ the caller must also be a member.
-3. The server mints a JWT signed with the LiveKit API secret: `identity` (the server-chosen guest id, or the Firebase uid from Phase 3), `name`, a grant for **that room only** (`roomJoin`, publish/subscribe, data). The token has no admin rights and a TTL of 10 minutes.
+1. The app asks `POST /api/rooms/{roomId}/token` with its ID token.
+2. The server verifies the ID token and checks that `rooms/{roomId}/members/{uid}` exists.
+3. The server mints a JWT signed with the LiveKit API secret: `identity` = Firebase uid, `name` from the profile, and a grant for **that room only** (`roomJoin`, publish/subscribe, data). The token has no admin rights and a TTL of 10 minutes.
 4. The app connects to LiveKit with the token. While connected, LiveKit refreshes the session itself, so a short TTL does not cut off long calls.
 5. Removing someone is done server-side through the LiveKit RoomService API. The client cannot do it.
 
@@ -151,11 +181,14 @@ because Blaze has no automatic hard spending cap.
 ## 6. Security model
 
 * LiveKit API secret and Firebase Admin credentials exist only on the server (env vars locally, Secret Manager in production).
-* Every request body is validated with strict schemas. Unknown fields are rejected and display names are length- and character-restricted.
-* Rate limits: 120 req/min per IP overall, 20 room creations per 10 min, 30 joins per min (code guessing becomes impractical, since codes carry ~59 bits of entropy).
-* The server chooses participant identities, so a client cannot impersonate another user.
-* Logs never include headers, bodies or tokens.
-* Unknown, malformed and expired room codes all return the same error, so the API does not reveal which codes exist.
+* Every API request needs a Firebase ID token, verified with revocation checking. Disabled accounts and revoked sessions are refused immediately.
+* Every request body is validated with strict schemas. Unknown fields are rejected, and names are length- and character-restricted.
+* Least privilege: Firestore rules give clients read-only access to exactly what they need. All access-granting writes run server-side, with permission checks in one place (`services/rooms.ts`).
+* Rate limits: 300 req/min per IP overall; per user, 20 room creations per 10 min, 30 tokens per min, 30 invite views/accepts per min.
+* Invitation ids carry 128 random bits, expire (1 h – 7 days), are limited in uses (1–100) and can be revoked.
+* Participant identity in calls is the verified Firebase uid, so a client cannot impersonate another user.
+* Non-members get the same 404 for existing and non-existing rooms, so the API doesn't reveal which rooms exist.
+* Logs never include headers, bodies or tokens. Production refuses `ws://` and emulator settings.
 
 ### Encryption: what is and is not claimed
 
@@ -164,8 +197,11 @@ because Blaze has no automatic hard spending cap.
 
 ## 7. Known technical limitations
 
-* Phase 2 keeps rooms in memory: a backend restart forgets active room codes (calls already in progress continue). Run a single instance until Phase 3.
-* Phase 2 has no accounts. Anyone holding a valid room code can join, so share codes only with intended people. Room creation can be gated with `CREATE_ROOM_KEY`.
+* Profile pictures are set as an `https://` image URL. Uploading photos needs Cloud Storage, which now requires the paid Blaze plan, so it is deferred.
+* E-mail verification is not enforced yet; anyone can register with any address (they still need an invitation to join a room).
+* One account = one connection per call. Joining from a second device disconnects the first.
+* A room owner cannot leave or transfer ownership yet, and rooms cannot be deleted from the app yet.
+* Web release builds pointed at the **Auth emulator** forget the session on reload (FlutterFire limitation; real projects are not affected).
 * Browsers only allow camera access on **HTTPS or `localhost`**. A laptop opening `http://192.168.x.x` will not get a camera.
 * Android release builds require **HTTPS/WSS**. The debug build allows `http://` for LAN testing.
 * Incoming-call ringing while the app is closed needs FCM + a full-screen notification (Phase 5). Android restricts background starts, so ringing behaviour varies by manufacturer.
@@ -177,8 +213,8 @@ because Blaze has no automatic hard spending cap.
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | This document | ✅ |
-| 2 | Create/join room, real A/V, mic/cam/switch-camera/device picker/leave, status + duration, reconnect + error handling. Backend token API with tests. CI builds APK + web | ✅ code complete; web↔web call verified with real browsers; **Android device test pending (you)** |
-| 3 | Firebase Auth (register/login/logout/profile), ID-token-verified API, Firestore rooms + invitations (expiring, revocable), membership checks, Firestore rules | next |
-| 4 | Group-call layout polish, chat (Firestore, room-scoped), participant list, owner remove/end-for-all, waiting room | |
+| 2 | Create/join room, real A/V, mic/cam/switch-camera/device picker/leave, status + duration, reconnect + error handling. Backend token API with tests. CI builds APK + web | ✅ web↔web call verified with real browsers; **Android device results not yet reported** |
+| 3 | Firebase Auth (register/login/logout/reset/profile), ID-token-verified API, private rooms, expiring + revocable + use-limited invitations, waiting room, owner remove / end-for-all, Firestore rules | ✅ verified on emulators: 26 backend/rules tests, 13 Flutter tests, 22-check 3-user browser E2E; **real Firebase project and devices not yet tested** |
+| 4 | Chat (Firestore, room-scoped), contacts / friends via invitation, recent conversations, group-call polish, 1:1 "call a contact" | next |
 | 5 | FCM call notifications, release signing, Secret Manager, Cloud Run + Firebase Hosting deploy, structured logging | |
 | 6 | Full device/network test matrix with recorded results | |

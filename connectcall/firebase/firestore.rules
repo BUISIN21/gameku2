@@ -1,0 +1,73 @@
+rules_version = '2';
+
+// ConnectCall Firestore security rules.
+//
+// Design: every write that grants access (rooms, membership, invitations,
+// waiting-room decisions, profiles) goes through the backend, which uses the
+// Admin SDK and is therefore not subject to these rules. Clients get
+// READ-ONLY access to exactly the documents they are entitled to see.
+// Anything not matched below is denied.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isMember(roomId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+
+    function isOwner(roomId) {
+      return signedIn() &&
+        get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid == request.auth.uid;
+    }
+
+    // Public profile: display name and avatar only (no e-mail). Any signed-in
+    // user may read it, so names can be shown in calls and invitations.
+    match /users/{uid} {
+      allow get: if signedIn();
+      allow list, write: if false;
+
+      // The rooms this user belongs to (a mirror written by the backend).
+      match /memberships/{roomId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+    }
+
+    match /rooms/{roomId} {
+      allow get: if isMember(roomId);
+      allow list, write: if false;
+
+      match /members/{memberUid} {
+        // A user can always see their own membership (to learn they were
+        // approved); members can see the member list.
+        allow get: if isSelf(memberUid) || isMember(roomId);
+        allow list: if isMember(roomId);
+        allow write: if false;
+      }
+
+      match /waiting/{waitingUid} {
+        // The requester can watch their own request; the owner sees them all.
+        allow get: if isSelf(waitingUid) || isOwner(roomId);
+        allow list: if isOwner(roomId);
+        allow write: if false;
+      }
+
+      match /blocked/{blockedUid} {
+        allow read, write: if false;
+      }
+    }
+
+    // Invitations are secrets; only the backend reads or writes them.
+    match /invites/{inviteId} {
+      allow read, write: if false;
+    }
+  }
+}

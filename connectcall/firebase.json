@@ -1,0 +1,27 @@
+{
+  "firestore": {
+    "rules": "firebase/firestore.rules",
+    "indexes": "firebase/firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "app/build/web",
+    "ignore": ["firebase.json", "**/.*"],
+    "rewrites": [{ "source": "**", "destination": "/index.html" }],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+          { "key": "Permissions-Policy", "value": "camera=(self), microphone=(self), geolocation=()" }
+        ]
+      }
+    ]
+  },
+  "emulators": {
+    "auth": { "port": 9099, "host": "127.0.0.1" },
+    "firestore": { "port": 8085, "host": "127.0.0.1" },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}

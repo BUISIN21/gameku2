@@ -2,14 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:livekit_client/livekit_client.dart';
 
-import '../core/config.dart';
+import '../core/app_scope.dart';
 import '../core/theme.dart';
 import '../models/join_info.dart';
 import '../services/api_client.dart';
 import '../services/media_permissions.dart';
+import '../widgets/common.dart';
 import '../widgets/control_bar.dart';
 import '../widgets/device_settings_sheet.dart';
 import '../widgets/participant_tile.dart';
@@ -18,11 +18,11 @@ enum _Phase { connecting, connected, failed, ended }
 
 /// The live call: video tiles, controls, connection status and duration.
 class MeetingScreen extends StatefulWidget {
-  const MeetingScreen({super.key, required this.api, required this.roomCode, required this.displayName});
+  const MeetingScreen({super.key, required this.roomId, required this.roomName, required this.isOwner});
 
-  final ApiClient api;
-  final String roomCode;
-  final String displayName;
+  final String roomId;
+  final String roomName;
+  final bool isOwner;
 
   @override
   State<MeetingScreen> createState() => _MeetingScreenState();
@@ -82,7 +82,8 @@ class _MeetingScreenState extends State<MeetingScreen> {
     setState(() => _statusText = 'Asking the server for access…');
     final JoinInfo info;
     try {
-      info = await widget.api.joinRoom(roomCode: widget.roomCode, displayName: widget.displayName);
+      // The server checks membership and issues a token for this room only.
+      info = await AppScope.of(context).api.joinToken(widget.roomId);
     } on ApiException catch (e) {
       _fail(e.message);
       return;
@@ -298,8 +299,16 @@ class _MeetingScreenState extends State<MeetingScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Leave meeting?'),
-        content: const Text('Others can keep talking. You can rejoin with the same code while it is valid.'),
+        content: const Text('Others can keep talking. You can rejoin from the room page.'),
         actions: [
+          if (widget.isOwner)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, false);
+                _endForEveryone();
+              },
+              child: const Text('End for everyone'),
+            ),
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Stay')),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red.shade600, minimumSize: const Size(88, 40)),
@@ -319,11 +328,52 @@ class _MeetingScreenState extends State<MeetingScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
-  void _shareInvite() {
-    final link = invitationLink(widget.roomCode);
-    final text = link ?? widget.roomCode;
-    Clipboard.setData(ClipboardData(text: text));
-    _toast(link != null ? 'Invitation link copied' : 'Meeting code copied');
+  void _showPeople() {
+    final room = _room;
+    if (room == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => _PeopleSheet(
+        room: room,
+        isOwner: widget.isOwner,
+        onRemove: _removeParticipant,
+        onEndForAll: _endForEveryone,
+      ),
+    );
+  }
+
+  Future<void> _removeParticipant(RemoteParticipant p) async {
+    final name = _nameOf(p);
+    final ok = await confirm(context,
+        title: 'Remove $name?',
+        message: '$name is disconnected now and loses access to this room.',
+        action: 'Remove',
+        destructive: true);
+    if (!ok || !mounted) return;
+    try {
+      await AppScope.of(context).api.removeMember(widget.roomId, p.identity);
+      _toast('$name was removed');
+    } catch (e) {
+      _toast(e.toString());
+    }
+  }
+
+  Future<void> _endForEveryone() async {
+    final ok = await confirm(context,
+        title: 'End the call for everyone?',
+        message: 'Everyone is disconnected. The room stays, so you can start a new call later.',
+        action: 'End for everyone',
+        destructive: true);
+    if (!ok || !mounted) return;
+    try {
+      _leaving = true;
+      await AppScope.of(context).api.endCallForEveryone(widget.roomId);
+      await _leave();
+    } catch (e) {
+      _leaving = false;
+      _toast(e.toString());
+    }
   }
 
   String get _duration {
@@ -387,11 +437,11 @@ class _MeetingScreenState extends State<MeetingScreen> {
 
     return Column(children: [
       _TopBar(
-        roomCode: widget.roomCode,
+        roomName: widget.roomName,
         duration: _duration,
         participantCount: remotes.length + 1,
         reconnecting: _reconnecting,
-        onShare: _shareInvite,
+        onPeople: _showPeople,
       ),
       if (!room.canPlaybackAudio)
         MaterialBanner(
@@ -401,7 +451,7 @@ class _MeetingScreenState extends State<MeetingScreen> {
       Expanded(
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: _Stage(local: local, remotes: remotes, onShare: _shareInvite),
+          child: _Stage(local: local, remotes: remotes),
         ),
       ),
       Padding(
@@ -455,18 +505,18 @@ class _MeetingScreenState extends State<MeetingScreen> {
 
 class _TopBar extends StatelessWidget {
   const _TopBar({
-    required this.roomCode,
+    required this.roomName,
     required this.duration,
     required this.participantCount,
     required this.reconnecting,
-    required this.onShare,
+    required this.onPeople,
   });
 
-  final String roomCode;
+  final String roomName;
   final String duration;
   final int participantCount;
   final bool reconnecting;
-  final VoidCallback onShare;
+  final VoidCallback onPeople;
 
   @override
   Widget build(BuildContext context) {
@@ -491,13 +541,13 @@ class _TopBar extends StatelessWidget {
               style: theme.textTheme.titleSmall,
             ),
             Text(
-              '$roomCode · $participantCount in call',
+              '$roomName · $participantCount in call',
               style: theme.textTheme.bodySmall?.copyWith(color: Colors.white60),
               overflow: TextOverflow.ellipsis,
             ),
           ]),
         ),
-        IconButton(tooltip: 'Copy invitation', onPressed: onShare, icon: const Icon(Icons.person_add_alt)),
+        IconButton(tooltip: 'People in the call', onPressed: onPeople, icon: const Icon(Icons.people_alt_outlined)),
       ]),
     );
   }
@@ -505,11 +555,10 @@ class _TopBar extends StatelessWidget {
 
 /// Lays out video tiles: speaker + self-view for 1:1 calls, a grid otherwise.
 class _Stage extends StatelessWidget {
-  const _Stage({required this.local, required this.remotes, required this.onShare});
+  const _Stage({required this.local, required this.remotes});
 
   final LocalParticipant? local;
   final List<RemoteParticipant> remotes;
-  final VoidCallback onShare;
 
   @override
   Widget build(BuildContext context) {
@@ -521,20 +570,12 @@ class _Stage extends StatelessWidget {
           left: 16,
           right: 16,
           top: 16,
-          child: Center(
+          child: const Center(
             child: Card(
               color: Colors.black87,
               child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const Text('Waiting for others to join…'),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: onShare,
-                    icon: const Icon(Icons.copy),
-                    label: const Text('Copy invitation'),
-                  ),
-                ]),
+                padding: EdgeInsets.all(16),
+                child: Text('Waiting for others to join…'),
               ),
             ),
           ),
@@ -625,6 +666,69 @@ class _StatusView extends StatelessWidget {
           ]),
         ),
       ),
+    );
+  }
+}
+
+/// Who is in the call; the owner can remove people or end the call for all.
+class _PeopleSheet extends StatelessWidget {
+  const _PeopleSheet({required this.room, required this.isOwner, required this.onRemove, required this.onEndForAll});
+
+  final Room room;
+  final bool isOwner;
+  final Future<void> Function(RemoteParticipant) onRemove;
+  final Future<void> Function() onEndForAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: room,
+      builder: (context, _) {
+        final local = room.localParticipant;
+        final remotes = room.remoteParticipants.values.toList();
+        return SafeArea(
+          child: ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), children: [
+            Text('In the call (${remotes.length + 1})', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (local != null)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: UserAvatar(name: local.name),
+                title: Text('${local.name} (you)'),
+                subtitle: Text(isOwner ? 'Owner' : 'Member'),
+              ),
+            for (final p in remotes)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: UserAvatar(name: p.name),
+                title: Text(p.name.isNotEmpty ? p.name : p.identity),
+                subtitle: Text(p.isMicrophoneEnabled() ? 'Mic on' : 'Muted'),
+                trailing: isOwner
+                    ? IconButton(
+                        tooltip: 'Remove from room',
+                        icon: const Icon(Icons.person_remove_outlined),
+                        onPressed: () {
+                          Navigator.pop(context);
+                          onRemove(p);
+                        },
+                      )
+                    : null,
+              ),
+            if (isOwner) ...[
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.red.shade400),
+                onPressed: () {
+                  Navigator.pop(context);
+                  onEndForAll();
+                },
+                icon: const Icon(Icons.call_end),
+                label: const Text('End call for everyone'),
+              ),
+            ],
+          ]),
+        );
+      },
     );
   }
 }

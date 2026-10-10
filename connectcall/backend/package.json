@@ -1,6 +1,6 @@
 {
   "name": "connectcall-backend",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "ConnectCall API: room creation and LiveKit access-token issuing",
   "type": "module",
@@ -13,13 +13,16 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test \"test/**/*.test.ts\""
+    "test": "firebase emulators:exec --config ../firebase.json --project demo-connectcall --only auth,firestore \"npm run test:run\"",
+    "test:run": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "emulators": "firebase emulators:start --config ../firebase.json --project demo-connectcall --only auth,firestore"
   },
   "dependencies": {
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.3.0",
     "express-rate-limit": "^8.7.1",
+    "firebase-admin": "^14.5.0",
     "helmet": "^8.3.0",
     "livekit-server-sdk": "^2.19.1",
     "pino": "^10.4.0",
@@ -27,10 +30,13 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^22.0.0",
     "@types/supertest": "^6.0.3",
+    "firebase": "^13.0.0",
+    "firebase-tools": "^15.33.0",
     "supertest": "^7.1.0",
     "tsx": "^4.20.0",
     "typescript": "~5.9.3"

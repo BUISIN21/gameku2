@@ -1,0 +1,4 @@
+# Real project settings live here, per developer. Not secret, but not shared.
+*.json
+!example.json
+!emulator.json

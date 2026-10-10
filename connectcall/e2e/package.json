@@ -1,12 +1,13 @@
 {
   "name": "connectcall-e2e",
   "private": true,
-  "description": "Two real browsers join one ConnectCall room and verify audio/video end to end",
+  "description": "Real-browser end-to-end tests for ConnectCall",
   "scripts": {
-    "test": "node two-browser-call.cjs"
+    "test": "node accounts-invites-call.cjs"
   },
   "dependencies": {
     "livekit-server-sdk": "^2.19.0",
-    "playwright": "1.56.1"
+    "playwright": "1.56.1",
+    "firebase": "12.19.0"
   }
 }

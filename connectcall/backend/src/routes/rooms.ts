@@ -1,57 +1,96 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAccessKey } from '../middleware/accessKey.js';
-import { HttpError } from '../middleware/errors.js';
-import { createRoomLimiter, joinLimiter } from '../middleware/rateLimit.js';
-import { newGuestIdentity, type TokenIssuer } from '../services/livekit.js';
-import { normalizeRoomCode, RoomLimitError, type InMemoryRoomStore } from '../services/roomStore.js';
+import { createRoomLimiter, tokenLimiter } from '../middleware/rateLimit.js';
+import type { RoomService } from '../services/rooms.js';
+import { InviteId, parseBody, parseParam, RoomId, RoomName, Uid } from './validation.js';
 
-const DisplayName = z
-  .string()
-  .trim()
-  .min(1, 'Display name is required')
-  .max(40, 'Display name must be at most 40 characters')
-  // Letters, marks, numbers, spaces and a few punctuation marks; no control characters.
-  .regex(/^[\p{L}\p{M}\p{N} .,'_-]+$/u, 'Display name contains unsupported characters');
+const CreateRoom = z.object({ name: RoomName, requireApproval: z.boolean().default(false) }).strict();
+const CreateInvite = z
+  .object({
+    expiresInHours: z.number().int().min(1).max(168).default(24),
+    maxUses: z.number().int().min(1).max(100).default(10),
+  })
+  .strict();
 
-const CreateRoomBody = z.object({ displayName: DisplayName }).strict();
-const JoinRoomBody = z.object({ displayName: DisplayName }).strict();
+const ROOM_404: [string, string] = ['room_not_found', 'Room not found or you are not a member'];
 
-function parse<T>(schema: z.ZodType<T>, body: unknown): T {
-  const result = schema.safeParse(body ?? {});
-  if (!result.success) {
-    throw new HttpError(400, 'invalid_request', result.error.issues[0]?.message ?? 'Invalid request');
-  }
-  return result.data;
-}
-
-export function roomsRouter(deps: { store: InMemoryRoomStore; tokens: TokenIssuer; createRoomKey: string }) {
+export function roomsRouter(rooms: RoomService) {
   const router = Router();
+  const roomId = (v: unknown) => parseParam(RoomId, v, ROOM_404);
+  const uid = (v: unknown) => parseParam(Uid, v, ['member_not_found', 'That person is not a member']);
 
-  router.post('/', createRoomLimiter, requireAccessKey(deps.createRoomKey), (req, res) => {
-    const { displayName } = parse(CreateRoomBody, req.body);
-    try {
-      const room = deps.store.create(displayName);
-      req.log.info({ room: room.code }, 'room created');
-      res.status(201).json({ roomCode: room.code, expiresAt: new Date(room.expiresAt).toISOString() });
-    } catch (err) {
-      if (err instanceof RoomLimitError) throw new HttpError(503, 'room_limit', 'Server is at capacity, try later');
-      throw err;
-    }
+  router.get('/', async (req, res) => {
+    res.json({ rooms: await rooms.listMyRooms(req.user!.uid) });
   });
 
-  router.post('/:code/join', joinLimiter, async (req, res) => {
-    const { displayName } = parse(JoinRoomBody, req.body);
-    const code = normalizeRoomCode(String(req.params.code ?? ''));
-    // Unknown, malformed and expired codes give the same answer so the
-    // endpoint does not reveal which codes exist.
-    const room = code ? deps.store.get(code) : undefined;
-    if (!room) throw new HttpError(404, 'room_not_found', 'Room not found or expired');
+  router.post('/', createRoomLimiter, async (req, res) => {
+    const body = parseBody(CreateRoom, req.body);
+    const room = await rooms.createRoom(req.user!, body);
+    req.log.info({ room: room.id }, 'room created');
+    res.status(201).json(room);
+  });
 
-    const identity = newGuestIdentity();
-    const token = await deps.tokens.createJoinToken({ roomName: room.code, identity, displayName });
-    req.log.info({ room: room.code, identity }, 'join token issued');
-    res.json({ serverUrl: deps.tokens.serverUrl, token, roomCode: room.code, identity });
+  router.get('/:roomId', async (req, res) => {
+    res.json(await rooms.getRoom(roomId(req.params.roomId), req.user!.uid));
+  });
+
+  router.post('/:roomId/token', tokenLimiter, async (req, res) => {
+    const id = roomId(req.params.roomId);
+    const result = await rooms.issueToken(id, req.user!);
+    req.log.info({ room: id, uid: req.user!.uid }, 'join token issued');
+    res.json(result);
+  });
+
+  router.post('/:roomId/end', async (req, res) => {
+    const id = roomId(req.params.roomId);
+    await rooms.endCall(id, req.user!.uid);
+    req.log.info({ room: id }, 'call ended by owner');
+    res.status(204).end();
+  });
+
+  // Members
+  router.get('/:roomId/members', async (req, res) => {
+    res.json({ members: await rooms.listMembers(roomId(req.params.roomId), req.user!.uid) });
+  });
+
+  router.delete('/:roomId/members/:uid', async (req, res) => {
+    const id = roomId(req.params.roomId);
+    const target = req.params.uid === 'me' ? req.user!.uid : uid(req.params.uid);
+    await rooms.removeMember(id, req.user!.uid, target);
+    req.log.info({ room: id, target, self: target === req.user!.uid }, 'member removed');
+    res.status(204).end();
+  });
+
+  // Invitations (owner only)
+  router.get('/:roomId/invites', async (req, res) => {
+    res.json({ invites: await rooms.listInvites(roomId(req.params.roomId), req.user!.uid) });
+  });
+
+  router.post('/:roomId/invites', async (req, res) => {
+    const body = parseBody(CreateInvite, req.body);
+    const invite = await rooms.createInvite(roomId(req.params.roomId), req.user!.uid, body);
+    res.status(201).json(invite);
+  });
+
+  router.post('/:roomId/invites/:inviteId/revoke', async (req, res) => {
+    const invite = parseParam(InviteId, req.params.inviteId, ['invite_not_found', 'Invitation not found']);
+    await rooms.revokeInvite(roomId(req.params.roomId), req.user!.uid, invite);
+    res.status(204).end();
+  });
+
+  // Waiting room (owner only)
+  router.get('/:roomId/waiting', async (req, res) => {
+    res.json({ waiting: await rooms.listWaiting(roomId(req.params.roomId), req.user!.uid) });
+  });
+
+  router.post('/:roomId/waiting/:uid/:decision', async (req, res) => {
+    const decision = req.params.decision;
+    if (decision !== 'approve' && decision !== 'deny') {
+      res.status(404).json({ error: { code: 'not_found', message: 'Route not found' } });
+      return;
+    }
+    await rooms.decideWaiting(roomId(req.params.roomId), req.user!.uid, uid(req.params.uid), decision === 'approve');
+    res.status(204).end();
   });
 
   return router;

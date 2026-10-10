@@ -19,12 +19,14 @@ const EnvSchema = z.object({
     .refine((u) => /^wss?:\/\//.test(u), 'LIVEKIT_URL must start with ws:// or wss://'),
   LIVEKIT_API_KEY: z.string().min(1),
   LIVEKIT_API_SECRET: z.string().min(1),
+  FIREBASE_PROJECT_ID: z.string().regex(/^[a-z0-9-]{4,40}$/, 'FIREBASE_PROJECT_ID looks invalid'),
   CORS_ORIGINS: csv,
-  CREATE_ROOM_KEY: z.string().default(''),
-  ROOM_TTL_MINUTES: z.coerce.number().int().min(5).max(7 * 24 * 60).default(240),
   TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
   TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
+  // Set automatically by `firebase emulators:exec`; never set in production.
+  FIREBASE_AUTH_EMULATOR_HOST: z.string().optional(),
+  FIRESTORE_EMULATOR_HOST: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -38,8 +40,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error(`Invalid configuration:\n${issues.join('\n')}`);
   }
   const env = result.data;
-  if (env.NODE_ENV === 'production' && env.LIVEKIT_URL.startsWith('ws://')) {
-    throw new Error('Invalid configuration:\n  - LIVEKIT_URL: production requires wss://');
+  const problems: string[] = [];
+  if (env.NODE_ENV === 'production') {
+    if (env.LIVEKIT_URL.startsWith('ws://')) problems.push('  - LIVEKIT_URL: production requires wss://');
+    if (env.FIREBASE_AUTH_EMULATOR_HOST || env.FIRESTORE_EMULATOR_HOST) {
+      problems.push('  - FIREBASE_*_EMULATOR_HOST: emulators must not be used in production');
+    }
   }
+  if (problems.length) throw new Error(`Invalid configuration:\n${problems.join('\n')}`);
   return env;
 }

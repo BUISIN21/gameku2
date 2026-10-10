@@ -2,19 +2,22 @@ import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
+import type { Auth } from 'firebase-admin/auth';
 import type { Logger } from 'pino';
 import type { Env } from './config/env.js';
+import { requireUser } from './middleware/auth.js';
 import { errorHandler, notFound } from './middleware/errors.js';
 import { apiLimiter } from './middleware/rateLimit.js';
+import { invitesRouter } from './routes/invites.js';
+import { meRouter } from './routes/me.js';
 import { roomsRouter } from './routes/rooms.js';
-import type { TokenIssuer } from './services/livekit.js';
-import type { InMemoryRoomStore } from './services/roomStore.js';
+import type { RoomService } from './services/rooms.js';
 
 export interface AppDeps {
-  env: Pick<Env, 'CORS_ORIGINS' | 'CREATE_ROOM_KEY' | 'TRUST_PROXY'>;
+  env: Pick<Env, 'CORS_ORIGINS' | 'TRUST_PROXY'>;
   logger: Logger;
-  store: InMemoryRoomStore;
-  tokens: TokenIssuer;
+  auth: Auth;
+  rooms: RoomService;
 }
 
 export function createApp(deps: AppDeps) {
@@ -25,7 +28,7 @@ export function createApp(deps: AppDeps) {
   app.use(
     pinoHttp({
       logger: deps.logger,
-      // Never log headers (they may carry access keys / ID tokens) or bodies.
+      // Never log headers (they carry ID tokens) or bodies.
       serializers: {
         req: (req) => ({ id: req.id, method: req.method, url: req.url }),
         res: (res) => ({ statusCode: res.statusCode }),
@@ -37,8 +40,8 @@ export function createApp(deps: AppDeps) {
   app.use(
     cors({
       origin: deps.env.CORS_ORIGINS,
-      methods: ['GET', 'POST'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Access-Key'],
+      methods: ['GET', 'POST', 'PUT', 'DELETE'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
       maxAge: 600,
     }),
   );
@@ -48,11 +51,11 @@ export function createApp(deps: AppDeps) {
     res.json({ status: 'ok' });
   });
 
-  app.use('/api', apiLimiter);
-  app.use(
-    '/api/rooms',
-    roomsRouter({ store: deps.store, tokens: deps.tokens, createRoomKey: deps.env.CREATE_ROOM_KEY }),
-  );
+  // Every /api route requires a verified Firebase user.
+  app.use('/api', apiLimiter, requireUser(deps.auth));
+  app.use('/api/me', meRouter(deps.rooms));
+  app.use('/api/rooms', roomsRouter(deps.rooms));
+  app.use('/api/invites', invitesRouter(deps.rooms));
 
   app.use(notFound);
   app.use(errorHandler);
