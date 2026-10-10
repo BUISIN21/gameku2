@@ -27,7 +27,8 @@ Firebase emulators (firebase-tools 15.33), and a LiveKit server v1.13.8 built fr
 | 7h | … waiting room: guest waits, owner approves, guest sees approval live (rules + Firestore listener) | | ✅ |
 | 7i | … sign out returns to the login screen | | ✅ |
 | 8 | No server secrets in the web build | `grep` for `LIVEKIT_API_SECRET`, `devkey`, private keys, `client_secret` | ✅ none |
-| 9 | Android APK build | GitHub Actions (Android SDK downloads are blocked in this container) | ⏳ see the CI run for this commit |
+| 9 | Android APK build (release + debug) with Firebase plugins; secret scan of APKs + web | GitHub Actions run 38030865700 (Android SDK downloads are blocked in this container) | ✅ |
+| 10 | Backend + rules tests, Flutter tests and the 22-check E2E **also pass in CI** on a clean runner (LiveKit 1.13.8 release binary) | same run | ✅ |
 
 **Found and fixed during testing:**
 * The invitation-link dialog used `SelectableText`, which Flutter web doesn't expose to assistive technology. It's now plain text plus a Copy button.
@@ -41,7 +42,7 @@ CI warns that `flutter_webrtc` and `livekit_client` still apply the Kotlin Gradl
 
 | # | Test | Status |
 |---|---|---|
-| 10 | Android ↔ laptop call on a real phone | ❌ not reported. You said "done" after Phase 2 but didn't say which checklist items passed |
+| 10a | Android ↔ laptop call on a real phone | ❌ not reported. You said "done" after Phase 2 but didn't say which checklist items passed |
 | 11 | Different networks (Wi-Fi ↔ mobile data) via LiveKit Cloud | ❌ |
 | 12 | Android permission denial / "don't ask again" | ❌ |
 | 13 | Front/rear camera switch on a phone | ❌ |
