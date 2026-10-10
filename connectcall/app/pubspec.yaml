@@ -32,7 +32,9 @@ dependencies:
     sdk: flutter
 
   livekit_client: ^2.13.1
-  permission_handler: ^13.0.2
+  # 13.x pulls in permission_handler_android 14.x, which needs compileSdk 37;
+  # Flutter 3.47 (Android Gradle Plugin 9.1) supports up to 36.
+  permission_handler: ^12.0.3
   http: ^1.6.0
   shared_preferences: ^2.5.6
 

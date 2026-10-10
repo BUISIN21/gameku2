@@ -42,7 +42,7 @@
 |---|---|---|
 | Flutter 3.47 (Dart 3.13) | One codebase for Android + web | Verified: `flutter build web` passes here; APK built by CI |
 | `livekit_client` 2.13.1 | Official Flutter SDK; Android + web supported | Uses `flutter_webrtc` 1.6; minSdk 21 (Flutter default 24 is above that) |
-| `permission_handler` 13 | Explicit Android runtime prompts so we can explain a refusal | Only called on Android; browsers show their own prompt |
+| `permission_handler` 12.0.3 | Explicit Android runtime prompts so we can explain a refusal | Only called on Android; browsers show their own prompt. **Pinned below 13**: 13.x needs Android compileSdk 37, which Flutter 3.47's Android Gradle Plugin (9.1) does not support yet (found by the CI APK build) |
 | Node 22 + Express 5 + TS 5.9 | Simple, well-understood API server | Verified: typecheck, tests, build pass |
 | `livekit-server-sdk` 2.19 | Official token minting / room admin | Node ≥ 19 |
 | Firebase Auth + Firestore + FCM | Managed identity, rules-enforced DB, push | FlutterFire supports Android + web (Phase 3) |
