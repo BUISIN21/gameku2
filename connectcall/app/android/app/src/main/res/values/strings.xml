@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Name shown under the launcher icon. Keep in sync with APP_NAME. -->
+    <string name="app_name">ConnectCall</string>
+</resources>

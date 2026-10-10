@@ -1,0 +1,89 @@
+name: ConnectCall
+
+on:
+  push:
+    paths: ["connectcall/**", ".github/workflows/connectcall.yml"]
+  pull_request:
+    paths: ["connectcall/**", ".github/workflows/connectcall.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: connectcall/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: connectcall/backend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: connectcall/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+      # Optional repository variables (Settings → Secrets and variables →
+      # Actions → Variables). They are public build settings, not secrets.
+      - name: Build web
+        run: >
+          flutter build web --release --no-web-resources-cdn
+          --dart-define=API_BASE_URL=${{ vars.CONNECTCALL_API_BASE_URL }}
+          --dart-define=APP_NAME=${{ vars.CONNECTCALL_APP_NAME || 'ConnectCall' }}
+
+      - name: Build Android APKs
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE_URL=${{ vars.CONNECTCALL_API_BASE_URL }} \
+            --dart-define=WEB_APP_URL=${{ vars.CONNECTCALL_WEB_APP_URL }} \
+            --dart-define=APP_NAME=${{ vars.CONNECTCALL_APP_NAME || 'ConnectCall' }}
+          # Debug build allows http:// for testing against a laptop on the LAN.
+          flutter build apk --debug \
+            --dart-define=API_BASE_URL=${{ vars.CONNECTCALL_API_BASE_URL }}
+          mkdir -p ../out
+          cp build/app/outputs/flutter-apk/app-release.apk ../out/ConnectCall-release.apk
+          cp build/app/outputs/flutter-apk/app-debug.apk ../out/ConnectCall-debug.apk
+
+      - name: Check builds contain no server secrets
+        run: |
+          set -e
+          for pattern in LIVEKIT_API_SECRET "BEGIN PRIVATE KEY" private_key_id; do
+            if grep -R -a -l "$pattern" build/web ../out; then
+              echo "::error::Found '$pattern' in a client build"; exit 1
+            fi
+          done
+          echo "No server secrets found in client builds."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ConnectCall-android
+          path: connectcall/out/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ConnectCall-web
+          path: connectcall/app/build/web
