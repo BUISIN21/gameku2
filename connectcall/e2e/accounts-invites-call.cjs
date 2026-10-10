@@ -38,7 +38,12 @@ const PASSWORD = 'correct-horse-battery';
 const pages = [];
 
 async function newPage(browser, label) {
-  const ctx = await browser.newContext({ permissions: ['camera', 'microphone'], viewport: { width: 1100, height: 760 } });
+  // CI runners have no system locale; Flutter web needs a valid one.
+  const ctx = await browser.newContext({
+    locale: 'en-US',
+    permissions: ['camera', 'microphone'],
+    viewport: { width: 1100, height: 760 },
+  });
   await ctx.route(/https:\/\/www\.gstatic\.com\/firebasejs\/[\d.]+\/(.+\.js)$/, (route) => {
     const file = path.join(FIREBASE_JS, route.request().url().split('/').pop());
     route.fulfill({ path: file, contentType: 'text/javascript' });
