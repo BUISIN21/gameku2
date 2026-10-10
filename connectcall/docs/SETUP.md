@@ -176,6 +176,8 @@ flutter build web --release --no-web-resources-cdn --dart-define=API_BASE_URL=ht
 builds, add the repository variable `CONNECTCALL_API_BASE_URL` (Settings →
 Secrets and variables → Actions → **Variables**). It is a public URL, not a secret.
 
+The release APK contains all CPU types (~90 MB). `flutter build apk --release --split-per-abi` makes ~30 MB files, and most modern phones need `app-arm64-v8a-release.apk`.
+
 To install an APK, copy it to the phone, open it and allow "Install unknown apps" for your file manager.
 
 ---

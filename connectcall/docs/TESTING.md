@@ -22,7 +22,7 @@ its output was checked. Nothing in this table is assumed.**
 | 7e | … leave (with confirmation) removes participant | | ✅ |
 | 7f | … unknown room code refused with a clear message, no LiveKit connection made | | ✅ |
 | 8 | No server secrets in web build (`LIVEKIT_API_SECRET`, `devkey`, private keys) | `grep` over `build/web` | ✅ none found |
-| 9 | Android APK build | GitHub Actions `ConnectCall` workflow (Android SDK downloads are blocked in the build container) | ⏳ see CI run |
+| 9 | Android APK build (release 91.3 MB universal + debug) | GitHub Actions run 38021733698 (Android SDK downloads are blocked in the build container). The first run failed: permission_handler 13 needs compileSdk 37, so it is pinned to 12.0.3 | ✅ built; CI secret scan of APKs + web clean |
 | 10 | Android ↔ laptop call on a real phone | Manual, section 3 | ❌ **not yet tested** |
 | 11 | Different networks (Wi-Fi ↔ mobile data) via LiveKit Cloud | Manual | ❌ not yet tested |
 | 12 | Android permission denial / "don't ask again" flow | Manual | ❌ not yet tested |
@@ -30,6 +30,8 @@ its output was checked. Nothing in this table is assumed.**
 | 14 | Network interruption + automatic reconnect | Manual | ❌ not yet tested |
 | 15 | Laptop device picker with real multiple devices | Manual | ❌ not yet tested |
 | 16 | Dockerfile build | `docker build` (no Docker daemon in container; the same steps were run by hand in #3) | ⚠️ not run |
+
+CI warns that `flutter_webrtc` and `livekit_client` still apply the Kotlin Gradle Plugin, and that a future Flutter release will stop building such plugins. Before upgrading Flutter past 3.47, check that newer versions of those plugins have migrated.
 
 ## 2. Re-running the automated checks
 
