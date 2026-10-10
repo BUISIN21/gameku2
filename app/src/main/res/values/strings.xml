@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Video Call</string>
+    <string name="permission_denied">Izin kamera &amp; mikrofon diperlukan untuk video call.</string>
+</resources>

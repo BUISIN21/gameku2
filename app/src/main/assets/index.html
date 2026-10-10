@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Video Call</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Layar utama -->
+  <section id="home" class="screen active">
+    <header>
+      <h1>Video Call</h1>
+      <span id="status" class="status connecting">Menghubungkan…</span>
+    </header>
+
+    <div class="preview-wrap">
+      <video id="preview" autoplay playsinline muted></video>
+      <div id="preview-placeholder" class="placeholder">Kamera belum aktif</div>
+    </div>
+
+    <div class="card">
+      <label>Kode kamu</label>
+      <div class="my-code">
+        <span id="my-code">------</span>
+        <button id="copy-btn" class="small">Salin</button>
+      </div>
+      <p class="hint">Bagikan kode ini ke teman supaya dia bisa menelepon kamu.</p>
+    </div>
+
+    <div class="card">
+      <label for="remote-code">Kode teman</label>
+      <input id="remote-code" type="tel" inputmode="numeric" maxlength="6" placeholder="contoh: 482915" autocomplete="off">
+      <button id="call-btn" class="primary">📞 Panggil</button>
+    </div>
+  </section>
+
+  <!-- Panggilan masuk -->
+  <section id="incoming" class="screen overlay">
+    <div class="ring-avatar">📞</div>
+    <h2>Panggilan masuk</h2>
+    <p>dari <b id="incoming-code"></b></p>
+    <div class="row">
+      <button id="reject-btn" class="round danger" aria-label="Tolak">✖</button>
+      <button id="accept-btn" class="round success" aria-label="Terima">✔</button>
+    </div>
+  </section>
+
+  <!-- Sedang panggilan -->
+  <section id="in-call" class="screen call">
+    <video id="remote-video" autoplay playsinline></video>
+    <video id="local-video" autoplay playsinline muted></video>
+    <div class="call-top">
+      <span id="call-peer"></span>
+      <span id="call-state">Memanggil…</span>
+    </div>
+    <div class="controls">
+      <button id="mute-btn" class="round" aria-label="Mikrofon">🎤</button>
+      <button id="cam-btn" class="round" aria-label="Kamera">📷</button>
+      <button id="switch-btn" class="round" aria-label="Ganti kamera">🔄</button>
+      <button id="hangup-btn" class="round danger" aria-label="Tutup">📵</button>
+    </div>
+  </section>
+
+  <div id="toast"></div>
+
+  <script src="peerjs.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
